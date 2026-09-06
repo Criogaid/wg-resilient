@@ -1,0 +1,266 @@
+name: Container
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: ${{ github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build
+        run: docker buildx build --platform linux/amd64 --provenance=false --load -t wg-resilient:test .
+      - name: Test
+        env:
+          IMAGE: wg-resilient:test
+        run: |
+          ./tests/check.sh
+          docker run --rm --entrypoint wg "$IMAGE" --version
+          ./tests/e2e.sh
+          SPEEDER_ENABLED=true ./tests/e2e.sh
+
+  resolve-release:
+    if: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.resolve.outputs.publish }}
+      public_tag: ${{ steps.resolve.outputs.public_tag }}
+      wg_version: ${{ steps.resolve.outputs.wg_version }}
+      wg_commit: ${{ steps.resolve.outputs.wg_commit }}
+      evidence_tag: ${{ steps.resolve.outputs.evidence_tag }}
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wg-resilient
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: resolve
+        name: Resolve upstream identity
+        shell: bash
+        run: |
+          refs=$(git ls-remote --tags https://git.zx2c4.com/wireguard-tools 'refs/tags/v*')
+          wg_version=$(sed -n 's#.*refs/tags/\(v[0-9][0-9.]*\)\^{}#\1#p' <<<"$refs" | sort -V | tail -1)
+          wg_commit=$(awk -v ref="refs/tags/$wg_version^{}" '$2 == ref { print $1 }' <<<"$refs")
+          [[ $wg_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ $wg_commit =~ ^[0-9a-f]{40}$ ]]
+
+          evidence_tag="wireguard-tools-${wg_version#v}"
+          if [[ $GITHUB_EVENT_NAME == schedule ]]; then
+            public_tag=$evidence_tag
+          else
+            public_tag=${GITHUB_REF_NAME#v}
+          fi
+          publish=true
+
+          published_contract_valid() {
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$evidence_tag" >/dev/null 2>&1 || return 1
+            local manifest platforms digest labels
+            manifest=$(docker buildx imagetools inspect "$IMAGE:$evidence_tag" --format '{{json .Manifest}}' 2>/dev/null) || return 1
+            platforms=$(jq -r '.manifests[] | select(.annotations."vnd.docker.reference.type" != "attestation-manifest") | [.platform.os, .platform.architecture, (.platform.variant // "")] | if .[2] == "" then "\(.[0])/\(.[1])" else "\(.[0])/\(.[1])/\(.[2])" end' <<<"$manifest" | sort)
+            [[ $platforms == "$(printf '%s\n' linux/amd64 linux/arm/v7 linux/arm64 | sort)" ]] || return 1
+            while read -r digest; do
+              labels=$(docker buildx imagetools inspect "$IMAGE@$digest" --format '{{json .Image.Config.Labels}}' 2>/dev/null) || return 1
+              jq -e --arg version "$wg_version" --arg commit "$wg_commit" \
+                '."org.opencontainers.image.wireguard-tools.version" == $version and ."org.opencontainers.image.wireguard-tools.commit" == $commit' \
+                <<<"$labels" >/dev/null || return 1
+            done < <(jq -r '.manifests[] | select(.annotations."vnd.docker.reference.type" != "attestation-manifest") | .digest' <<<"$manifest")
+          }
+
+          if [[ $GITHUB_EVENT_NAME == schedule ]] && published_contract_valid; then
+            publish=false
+          fi
+
+          {
+            echo "publish=$publish"
+            echo "public_tag=$public_tag"
+            echo "wg_version=$wg_version"
+            echo "wg_commit=$wg_commit"
+            echo "evidence_tag=$evidence_tag"
+          } >>"$GITHUB_OUTPUT"
+
+  publish-platform:
+    needs: resolve-release
+    if: ${{ needs.resolve-release.outputs.publish == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: amd64
+            platform: linux/amd64
+            debian_arch: amd64
+            runner: ubuntu-24.04
+            qemu: false
+            native_e2e: true
+          - slug: arm64
+            platform: linux/arm64
+            debian_arch: arm64
+            runner: ubuntu-24.04-arm
+            qemu: false
+            native_e2e: true
+          - slug: armv7
+            platform: linux/arm/v7
+            debian_arch: armhf
+            runner: ubuntu-24.04
+            qemu: true
+            native_e2e: false
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wg-resilient
+      TRACE: ${{ secrets.DOCKERHUB_USERNAME }}/wg-resilient:run-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slug }}
+      EXPECTED_ARCH: ${{ matrix.debian_arch }}
+      WG_VERSION: ${{ needs.resolve-release.outputs.wg_version }}
+      WG_COMMIT: ${{ needs.resolve-release.outputs.wg_commit }}
+      PUBLIC_TAG: ${{ needs.resolve-release.outputs.public_tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        if: ${{ matrix.qemu }}
+        with:
+          platforms: arm
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build candidate
+        run: |
+          docker buildx build \
+            --platform '${{ matrix.platform }}' \
+            --build-arg WIREGUARD_TOOLS_VERSION="$WG_VERSION" \
+            --build-arg WIREGUARD_TOOLS_COMMIT="$WG_COMMIT" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$PUBLIC_TAG" \
+            --label org.opencontainers.image.wireguard-tools.version="$WG_VERSION" \
+            --label org.opencontainers.image.wireguard-tools.commit="$WG_COMMIT" \
+            --provenance=false --load -t "$TRACE" .
+      - name: Test candidate
+        run: |
+          actual=$(docker run --rm --entrypoint dpkg "$TRACE" --print-architecture)
+          test "$actual" = "$EXPECTED_ARCH"
+          docker run --rm --entrypoint wg "$TRACE" --version | grep -F "$WG_VERSION"
+          docker run --rm --entrypoint sh "$TRACE" -c '
+            private=$(wg genkey)
+            public=$(printf "%s" "$private" | wg pubkey)
+            test "${#private}" -eq 44
+            test "${#public}" -eq 44
+            udp2raw --help >/dev/null 2>&1
+            speederv2 --help >/dev/null 2>&1
+          '
+      - name: Test native tunnel lifecycle
+        if: ${{ matrix.native_e2e }}
+        run: |
+          IMAGE="$TRACE" ./tests/e2e.sh
+          IMAGE="$TRACE" SPEEDER_ENABLED=true ./tests/e2e.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push verified platform
+        run: |
+          docker push "$TRACE"
+          digest=$(docker buildx imagetools inspect "$TRACE" --format '{{json .Manifest}}' | jq -r '.digest')
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p /tmp/digests
+          printf '%s\n' "$digest" >"/tmp/digests/${{ matrix.slug }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.slug }}
+          path: /tmp/digests/${{ matrix.slug }}
+          retention-days: 1
+          if-no-files-found: error
+
+  publish-manifest:
+    needs: [resolve-release, publish-platform]
+    if: ${{ needs.resolve-release.outputs.publish == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wg-resilient
+      WG_VERSION: ${{ needs.resolve-release.outputs.wg_version }}
+      WG_COMMIT: ${{ needs.resolve-release.outputs.wg_commit }}
+      PUBLIC_TAG: ${{ needs.resolve-release.outputs.public_tag }}
+      EVIDENCE_TAG: ${{ needs.resolve-release.outputs.evidence_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - name: Re-resolve, publish, and verify manifest
+        shell: bash
+        run: |
+          current=$(git ls-remote --tags https://git.zx2c4.com/wireguard-tools "refs/tags/$WG_VERSION^{}" | awk '{ print $1 }')
+          test "$current" = "$WG_COMMIT"
+
+          mapfile -t files < <(find /tmp/digests -type f | sort)
+          test "${#files[@]}" -eq 3
+          sources=()
+          for file in "${files[@]}"; do
+            digest=$(cat "$file")
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+            sources+=("$IMAGE@$digest")
+          done
+
+          docker buildx imagetools create \
+            -t "$IMAGE:$PUBLIC_TAG" \
+            -t "$IMAGE:latest" \
+            "${sources[@]}"
+
+          expected=$(docker buildx imagetools inspect "$IMAGE:$PUBLIC_TAG" --format '{{json .Manifest}}' | jq -r '.digest')
+          [[ $expected =~ ^sha256:[0-9a-f]{64}$ ]]
+          for tag in "$PUBLIC_TAG" latest; do
+            matched=false
+            for attempt in 1 2 3 4 5; do
+              actual=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{json .Manifest}}' | jq -r '.digest')
+              if [[ $actual == "$expected" ]]; then
+                matched=true
+                break
+              fi
+              sleep $((attempt * 2))
+            done
+            $matched
+          done
+
+          manifest=$(docker buildx imagetools inspect "$IMAGE@$expected" --format '{{json .Manifest}}')
+          actual_platforms=$(jq -r '.manifests[] | select(.annotations."vnd.docker.reference.type" != "attestation-manifest") | [.platform.os, .platform.architecture, (.platform.variant // "")] | if .[2] == "" then "\(.[0])/\(.[1])" else "\(.[0])/\(.[1])/\(.[2])" end' <<<"$manifest" | sort)
+          expected_platforms=$(printf '%s\n' linux/amd64 linux/arm/v7 linux/arm64 | sort)
+          test "$actual_platforms" = "$expected_platforms"
+
+          for file in "${files[@]}"; do
+            digest=$(cat "$file")
+            labels=$(docker buildx imagetools inspect "$IMAGE@$digest" --format '{{json .Image.Config.Labels}}')
+            jq -e --arg revision "$GITHUB_SHA" --arg version "$PUBLIC_TAG" --arg wg_version "$WG_VERSION" --arg wg_commit "$WG_COMMIT" \
+              '."org.opencontainers.image.revision" == $revision and ."org.opencontainers.image.version" == $version and ."org.opencontainers.image.wireguard-tools.version" == $wg_version and ."org.opencontainers.image.wireguard-tools.commit" == $wg_commit' \
+              <<<"$labels" >/dev/null
+          done
+
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$EVIDENCE_TAG" >/dev/null 2>&1; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$EVIDENCE_TAG" \
+              -f sha="$GITHUB_SHA" >/dev/null
+          fi

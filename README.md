@@ -135,7 +135,7 @@ secrets:
 - 客户端会在 WireGuard 启动前为服务端 IPv4 添加高优先级策略路由，避免全局隧道把 udp2raw 外层流量再次送入 WireGuard。
 - 默认桥接网络用于隔离 WireGuard 路由，不会修改 Docker 主机的默认路由。
 - udp2raw 的加密不是 WireGuard 的替代品；内层流量仍由 WireGuard 认证和加密。
-- 镜像从固定提交构建，支持 Docker Buildx 原生构建的 `linux/amd64` 和 `linux/arm64`。
+- 发布镜像支持 `linux/amd64`、`linux/arm64` 和 `linux/arm/v7`；armv7 在 GitHub Actions 中通过 QEMU 构建和测试。
 
 运行静态检查：
 
@@ -149,3 +149,21 @@ secrets:
 ./tests/e2e.sh
 SPEEDER_ENABLED=true ./tests/e2e.sh
 ```
+
+## 发布镜像
+
+在 GitHub 仓库设置以下 Actions secrets：
+
+- `DOCKERHUB_USERNAME`：Docker Hub 用户名或组织名
+- `DOCKERHUB_TOKEN`：具有目标仓库写权限的 Docker Hub access token
+
+每周一的定时任务检查 `wireguard-tools` 官方 tag。发现尚未发布的新版本时，它会绑定 tag 对应的 commit，完成三架构构建和测试，然后发布 `wireguard-tools-<版本>` 与 `latest`。amd64 和 arm64 使用原生 runner 执行两种隧道模式的端到端测试；armv7 使用 QEMU 验证构建、架构、密钥运算及用户态程序，QEMU 不支持测试 WireGuard netlink。已验证版本通过 GitHub 证据标签和 Docker manifest/镜像标签共同识别，不会重复构建。
+
+项目版本也可以手工发布：
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+版本标签会发布 `${DOCKERHUB_USERNAME}/wg-resilient:1.0.0` 与 `:latest`。每个平台还会保留 `run-<workflow run>-<attempt>-<architecture>` 追踪标签；普通 `main` 推送和 pull request 只执行 amd64 构建及两种隧道模式测试。
