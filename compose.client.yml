@@ -1,0 +1,22 @@
+services:
+  wireguard-client:
+    image: wg-resilient:local
+    build: .
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+    environment:
+      ROLE: client
+      UDP2RAW_REMOTE_HOST: "${UDP2RAW_REMOTE_HOST:?set UDP2RAW_REMOTE_HOST in .env}"
+      UDP2RAW_PASSWORD: "${UDP2RAW_PASSWORD:-}"
+      UDP2RAW_PASSWORD_FILE: "${UDP2RAW_PASSWORD_FILE:-}"
+      UDP2RAW_PORT: "${UDP2RAW_PORT:-4096}"
+      SPEEDER_ENABLED: "${SPEEDER_ENABLED:-false}"
+      SPEEDER_FEC: "${SPEEDER_FEC:-20:10}"
+      SPEEDER_MTU: "${SPEEDER_MTU:-1250}"
+      SPEEDER_TIMEOUT: "${SPEEDER_TIMEOUT:-8}"
+    volumes:
+      - ./config/client/wg0.conf:/config/wg0.conf:ro

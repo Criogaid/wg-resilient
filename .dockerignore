@@ -1,0 +1,5 @@
+.git
+.env
+config/*/wg0.conf
+.e2e.*
+udp2raw-password.txt
