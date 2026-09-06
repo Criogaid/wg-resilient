@@ -3,6 +3,8 @@ set -eu
 cd "$(dirname "$0")/.."
 
 bash -n entrypoint.sh
+bash -n quickstart.sh
+bash -n tests/quickstart.sh
 sh -n healthcheck.sh
 sh -n sysctl-wrapper.sh
 sh -n tests/e2e.sh

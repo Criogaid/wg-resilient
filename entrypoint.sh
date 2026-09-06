@@ -63,7 +63,6 @@ if [[ $ROLE == client ]]; then
     [[ -n ${UDP2RAW_REMOTE_HOST:-} ]] || die "client requires UDP2RAW_REMOTE_HOST"
     route_ip=$(getent ahostsv4 "$UDP2RAW_REMOTE_HOST" | awk 'NR == 1 { print $1 }')
     [[ -n $route_ip ]] || die "cannot resolve IPv4 address for $UDP2RAW_REMOTE_HOST"
-    ip -4 rule add to "$route_ip/32" lookup main priority 100
     raw_listen_port=$WG_TUNNEL_PORT
     $SPEEDER_ENABLED && raw_listen_port=$SPEEDER_RELAY_PORT
     cat >"$raw_config" <<EOF
@@ -92,6 +91,9 @@ EOF
 
 wg-quick up "$WG_CONFIG"
 wg_up=true
+if [[ $ROLE == client ]]; then
+    ip -4 rule add to "$route_ip/32" lookup main priority 100
+fi
 
 if $SPEEDER_ENABLED; then
     if [[ $ROLE == client ]]; then
