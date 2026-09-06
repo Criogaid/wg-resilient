@@ -5,10 +5,10 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    sysctls:
-      net.ipv4.conf.all.src_valid_mark: "1"
+    network_mode: host
     environment:
       ROLE: client
+      WG_INTERFACE: "${WG_INTERFACE:-wg0}"
       UDP2RAW_REMOTE_HOST: "${UDP2RAW_REMOTE_HOST:?set UDP2RAW_REMOTE_HOST in .env}"
       UDP2RAW_PASSWORD: "${UDP2RAW_PASSWORD:-}"
       UDP2RAW_PASSWORD_FILE: "${UDP2RAW_PASSWORD_FILE:-}"
@@ -20,3 +20,4 @@ services:
     volumes:
       - ./config/client/wg0.conf:/config/wg0.conf:ro
       - ./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+      - ./healthcheck.sh:/usr/local/bin/healthcheck.sh:ro

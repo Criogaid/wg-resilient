@@ -44,7 +44,7 @@ PrivateKey = $client_private
 [Peer]
 PublicKey = $server_public
 Endpoint = 127.0.0.1:51821
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 10.77.0.0/24
 PersistentKeepalive = 2
 EOF
 
@@ -63,14 +63,12 @@ docker network create "$network" >/dev/null
 
 docker run -d --name "$server" --network "$network" \
     --cap-add NET_ADMIN --cap-add NET_RAW \
-    --sysctl net.ipv4.conf.all.src_valid_mark=1 \
     -e ROLE=server -e UDP2RAW_PASSWORD=test-password -e SPEEDER_ENABLED="$speeder" \
     -v "$tmp/server.conf:/config/wg0.conf:ro" "$image" >/dev/null
 server_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$server")
 
 docker run -d --name "$client" --network "$network" \
     --cap-add NET_ADMIN --cap-add NET_RAW \
-    --sysctl net.ipv4.conf.all.src_valid_mark=1 \
     -e ROLE=client -e UDP2RAW_REMOTE_HOST="$server_ip" \
     -e UDP2RAW_PASSWORD_FILE=/run/secrets/password -e SPEEDER_ENABLED="$speeder" \
     -e SPEEDER_FEC=10:3 -e SPEEDER_TIMEOUT=5 -e SPEEDER_MTU=1200 \

@@ -4,7 +4,7 @@
 
 你不需要自己生成密钥，也不需要从头编写配置文件。运行脚本、回答几个问题，就能得到服务器配置和客户端安装包。
 
-**先注意：这不是安装后就能让整台电脑上网的软件。** 默认只有客户端的 Docker 容器使用这条通道，电脑上的浏览器等程序不会自动走它。本项目的部署脚本面向 Linux，不是 Windows、手机上的 WireGuard 一键安装器。
+**默认就是两台机器互联，不接管上网出口。** Docker 使用宿主机网络，WireGuard 接口直接出现在 Linux 系统中：服务端默认是 `10.66.66.1`，客户端是 `10.66.66.2`。两边可以通过这些地址访问对方机器上的服务；普通网站流量和 DNS 设置保持原样。本项目不是 Windows、手机上的一键安装器。
 
 ## 开始前要准备什么？
 
@@ -47,6 +47,14 @@ cd wg-resilient
 bash quickstart.sh
 ```
 
+如果不想把接口叫作 `wg0`，可以在启动向导时指定名称：
+
+```sh
+WG_INTERFACE=wg-link bash quickstart.sh
+```
+
+这个名称会写入两端的 `.env`。接口名最多 15 个字符，首字符用字母或数字，其余可以使用字母、数字、下划线、点和连字符。宿主机已有同名接口时会拒绝启动，不会覆盖或删除它。
+
 脚本目前显示英文提示，可以对照下面的表填写。**方括号里是默认值，不知道怎么选时，大部分问题直接按回车即可。**
 
 | 屏幕上的提示 | 它在问什么？ | 第一次使用怎么填？ |
@@ -55,8 +63,6 @@ bash quickstart.sh
 | `FakeTCP port` | 用哪个端口接收客户端连接？ | 直接回车，使用 `4096` |
 | `Tunnel /24 network` | 通道内部使用哪一段地址？ | 直接回车，使用 `10.66.66.0`；如果现有网络已经在用这一段，请换一段私有地址，例如 `10.77.77.0` |
 | `WireGuard MTU` | 每个数据包的大小设置 | 直接回车，使用 `1280` |
-| `Client DNS IPv4` | 客户端通过哪个 DNS 查询网站地址？ | 直接回车，使用 `1.1.1.1` |
-| `Client routes: full or tunnel` | 哪些流量走通道？ | 直接回车选 `full`：客户端容器内所有 IPv4 流量走通道。`tunnel` 只连接通道内部网段 |
 | `Enable UDPspeeder` | 是否开启丢包补偿？ | 先直接回车选 `false`。以后确实需要时再启用，它会多消耗一些带宽 |
 | `Deploy server now? y/N` | 现在启动服务器吗？ | 输入 `y`，然后回车 |
 
@@ -77,6 +83,8 @@ bash quickstart-output/server/deploy.sh
 云服务器通常需要在控制台的“安全组”或“防火墙”里添加入站规则。服务器系统自己的防火墙如果开启，也要允许这个端口。只允许需要连接的客户端来源地址会更安全。
 
 这里放行的是 **TCP**，不是 UDP。脚本不会替你修改云平台安全组。
+
+WireGuard 的 UDP 51820 和客户端本地 UDP 51821/51822 不需要向公网开放；不要在安全组或系统防火墙中额外放行它们。host 模式不再有 Docker 端口隔离，服务的监听地址和宿主机防火墙需要自行确认。
 
 ## 第二步：把客户端安装包传过去
 
@@ -155,7 +163,9 @@ docker compose -p wg-resilient-client -f compose.yml logs --tail 100
 
 如果是 Docker 权限不足，请使用有 Docker 操作权限的账户。需要管理员权限时，可以执行 `sudo bash .../deploy.sh`，其中路径要换成你实际的部署脚本路径。
 
-如果已经成功握手，但电脑上的浏览器没有变化，这是正常的：**默认只有客户端容器使用通道，不会改变整台机器的网络。** 需要让其他 Docker 程序使用通道时，见后面的进阶说明。
+如果已成功握手，在客户端宿主机运行 `ping 10.66.66.1`，或者连接 `10.66.66.1:服务端口`。例如服务器的 sing-box 监听 TCP 8848，客户端程序就填写 `10.66.66.1:8848`，不需要配置 DNAT。服务必须监听隧道地址或所有地址，宿主机防火墙也要允许来自隧道的访问；只监听 `127.0.0.1` 的服务不能直接访问。
+
+如果应用仍在 Docker 桥接网络中，能否到达隧道还取决于 Docker 的转发规则。想避免这层转发，可让该应用也使用 `network_mode: host`，见下文。
 
 ## 以后怎么管理？
 
@@ -208,6 +218,26 @@ docker compose -p wg-resilient-client -f compose.yml restart
 
 服务器将上面命令中的 `wg-resilient-client` 换成 `wg-resilient-server`。两端需要一致的设置，请分别修改并重新启动；只改服务器上的客户端文件，不会自动更新远端客户端或已经生成的压缩包。
 
+### 修改接口名
+
+修改本机部署目录里的 `.env`：
+
+```dotenv
+WG_INTERFACE=wg-link
+```
+
+然后运行该目录的 `bash deploy.sh`。旧容器正常停止时会移除旧接口，新容器创建新接口；两端接口名可以不同，隧道地址和密钥不需要跟着改。健康检查和停止清理都会使用指定名称。
+
+磁盘上的配置文件仍叫 `config/server/wg0.conf` 或 `config/client/wg0.conf`，**不用改文件名**。不要只在终端 `export WG_INTERFACE` 后运行已有的 `deploy.sh`：部署脚本以它旁边的 `.env` 为准。
+
+### 从旧版桥接部署迁移
+
+不要只替换一份 Compose 就直接启动旧配置。先备份两端部署目录，并分别用旧目录的 Compose 执行 `down`，让旧容器清理它自己的规则。
+
+保留密钥迁移时，需同时更新两端的 Compose、`entrypoint.sh`、`healthcheck.sh`，在 `.env` 中增加 `WG_INTERFACE=wg0`。删除旧 `wg0.conf` 中为容器转发而添加的 `PostUp` / `PostDown`（包括 DNAT、MASQUERADE），删除客户端的 `DNS` 行，把客户端 `AllowedIPs = 0.0.0.0/0` 改为实际隧道网段，例如 `10.66.66.0/24`。再重新创建容器。**新入口会拒绝 IPv4/IPv6 默认路由，避免旧全流量配置影响宿主机。**
+
+如果不需要保留旧密钥，也可以用新向导生成新目录并配套部署两端。`git pull` 不会自动更新之前生成的目录或压缩包。
+
 ### 想重新生成一套配置？
 
 向导不会覆盖已有的输出文件夹，防止误删正在使用的密钥。需要重新生成时，在项目文件夹执行下面的命令，指定一个尚不存在的新目录：
@@ -218,7 +248,7 @@ bash quickstart.sh "$HOME/wg-new-setup"
 
 请把自定义目录放在项目之外，避免不小心提交密钥。新生成的客户端包需要重新传到客户端。
 
-部署脚本固定使用 `wg-resilient-server` 和 `wg-resilient-client` 这两个 Docker Compose 项目名。同一台机器重复部署同一角色会更新原来的服务，不会自动新增第二套。
+部署脚本固定使用 `wg-resilient-server` 和 `wg-resilient-client` 这两个 Docker Compose 项目名。同一台机器重复部署同一角色会更新原来的服务，不会自动新增第二套。接口和端口都由宿主机共享；更换接口名不能解决端口冲突，当前不支持在同一台机器同时运行多个同角色实例。
 
 ## 进阶设置
 
@@ -246,21 +276,19 @@ SPEEDER_TIMEOUT=8
 
 ### 让其他 Docker 程序使用通道
 
-在客户端的 `compose.yml` 中，把需要使用通道的服务加入已有的 `services:` 下。例如下面的 `app` 和 `wireguard-client` 应处于同一级：
+让需要访问对端的应用也使用宿主机网络即可，不用绑定到某个 WireGuard 容器：
 
 ```yaml
 services:
-  # 保留原有 wireguard-client 配置，在它旁边添加 app
   app:
     image: curlimages/curl
-    network_mode: service:wireguard-client
-    depends_on:
-      wireguard-client:
-        condition: service_healthy
-    command: ["--dns-servers", "1.1.1.1", "https://example.com"]
+    network_mode: host
+    command: ["http://10.66.66.1:8080"]
 ```
 
-这个例子启动后请求一次网站，然后退出。实际应用请换成自己的镜像和启动命令。共享网络不等于共享 DNS 配置，应用仍需要设置自己使用的 DNS。
+这个例子请求服务端的 HTTP 8080 服务，然后退出。实际使用时换成自己的应用和端口。应用中填写对方的隧道 IP 即可；SOCKS5 服务还需要在应用内选择 SOCKS5 并填写账号密码。
+
+使用 host 网络的应用不能同时设置 `ports:` 或 `networks:`。它直接使用宿主机端口，原有应用的监听范围和防火墙要重新核对，避免意外暴露服务。
 
 ### 不用向导，手动配置
 
@@ -309,6 +337,7 @@ docker compose -f compose.client.yml up -d --pull always --no-build
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `WG_RESILIENT_IMAGE` | `criogaid/wg-resilient:latest` | 使用的发布镜像，可以换成指定版本或可信的镜像仓库地址 |
+| `WG_INTERFACE` | `wg0` | 本机 WireGuard 接口名，最多 15 个字符；两端可以不同，配置文件名不用改 |
 | `UDP2RAW_REMOTE_HOST` | 无 | 客户端必填，服务器公网 IPv4 或能解析到 IPv4 的域名 |
 | `UDP2RAW_PORT` | `4096` | 对外连接端口，两端填写相同值 |
 | `UDP2RAW_PASSWORD` | 无 | 两端相同的口令，向导自动生成 |
@@ -318,7 +347,7 @@ docker compose -f compose.client.yml up -d --pull always --no-build
 | `SPEEDER_MTU` | `1250` | UDPspeeder 分片大小 |
 | `SPEEDER_TIMEOUT` | `8` | 等待一组数据的时间，单位为毫秒 |
 
-WireGuard 的密钥、地址、路由、MTU、DNS 和转发规则写在 `wg0.conf`，不是 `.env`。不要改动以下内部连接设置：
+WireGuard 的密钥、地址、隧道路由和 MTU 写在 `wg0.conf`，不是 `.env`。默认不设置 DNS、NAT、转发规则或默认路由。不要改动以下内部连接设置：
 
 - 服务器：`ListenPort = 51820`。
 - 客户端：`Endpoint = 127.0.0.1:51821`，这里不是填写公网 IP 的地方。
@@ -367,13 +396,13 @@ docker compose -f compose.client.yml -f compose.secret.yml up -d --pull always -
 
 - WireGuard 负责内层流量的认证和加密，udp2raw 的加密不能替代它。
 - 固定使用 FakeTCP、aes128cbc、hmac_sha1 和 UDPspeeder mode 0。
-- 接口为 `wg0`，配置挂载至 `/config/wg0.conf`，内部端口为 51820/51821/51822。
-- 客户端在 `wg-quick up` 之后、udp2raw 启动之前添加服务器 IPv4 的优先路由，避免外层流量再次进入隧道。
-- Compose 默认使用桥接网络，不修改宿主机的默认路由；已设置 `NET_ADMIN`、`NET_RAW` 权限。
+- 接口名由 `WG_INTERFACE` 决定。源配置固定挂载至 `/config/wg0.conf`，启动时复制到容器内权限受限的 `/run/wireguard/<接口名>.conf`，交给 `wg-quick` 加载；内部端口为 51820/51821/51822。
+- Compose 使用 `network_mode: host`，保留 `NET_ADMIN`、`NET_RAW`；不设置端口映射和容器级网络 sysctl。
+- 默认仅由 `wg-quick` 配置接口和隧道网段路由，不添加额外策略路由、不启用 IP 转发、不设置 NAT。udp2raw 的 FakeTCP 防 RST 规则仍由 `-a` 自动添加并清理，这是传输正常工作所必需的。
 - 快速向导只生成 IPv4 配置，不提供整机 IPv6 隧道。
 - 不支持旧的模式、算法、内部端口、配置路径环境变量及 `udp2raw-extra.conf`。
 - 发布镜像支持 `linux/amd64`、`linux/arm64`、`linux/arm/v7`。
-- Compose 只拉取发布镜像，不含 `build` 配置；只读挂载当前项目的 `entrypoint.sh`，使启动和路由逻辑与这份配置保持一致。请保留部署目录里的此文件。
+- Compose 只拉取发布镜像，不含 `build` 配置；只读挂载当前项目的 `entrypoint.sh` 和 `healthcheck.sh`，使接口管理和健康检查与这份配置保持一致。请保留部署目录里的这两个文件。
 
 参数参考：[UDPspeeder 参数说明](https://github.com/wangyu-/UDPspeeder/blob/61b24a369700c3d8248dd18fa9a524b778741454/README.md)、[wg-quick MTU 实现](https://git.zx2c4.com/wireguard-tools/tree/src/wg-quick/linux.bash)。
 
@@ -403,7 +432,7 @@ SPEEDER_ENABLED=true sh tests/e2e.sh
 bash tests/quickstart.sh --e2e
 ```
 
-完整部署测试会实际拉取发布镜像和启停容器，通过本机 TCP 24096 映射端口检查两种模式的握手、健康状态和路由顺序。已有快速启动容器时会拒绝运行。请在测试机器上执行，防火墙需要允许测试网桥之间的转发。
+完整部署测试会拉取发布镜像并启停容器，用两个隔离的网络空间模拟两台宿主机（将测试 Compose 的 host 网络替换为共享对应测试宿主的网络空间，不改真实宿主机的接口）。验证两种模式握手、双向访问宿主服务、自定义接口名、同名接口保护及停止清理，并核对默认路由、策略规则、NAT 和 IP 转发设置未被修改。已有快速启动容器时拒绝运行；防火墙需要允许测试网桥内的 TCP 24096 通信。
 
 ### 发布镜像（维护者使用）
 

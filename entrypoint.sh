@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-WG_CONFIG=/config/wg0.conf
+WG_SOURCE_CONFIG=/config/wg0.conf
+WG_INTERFACE=${WG_INTERFACE:-wg0}
+WG_CONFIG=
 UDP2RAW_PORT=${UDP2RAW_PORT:-4096}
 WG_LISTEN_PORT=51820
 WG_TUNNEL_PORT=51821
@@ -45,7 +47,7 @@ cleanup() {
     [[ -z $raw_pid ]] || wait "$raw_pid" 2>/dev/null || true
     [[ -z $speeder_pid ]] || wait "$speeder_pid" 2>/dev/null || true
     $wg_up && wg-quick down "$WG_CONFIG" >/dev/null 2>&1 || true
-    [[ -z $route_ip ]] || ip -4 rule del to "$route_ip/32" lookup main priority 100 2>/dev/null || true
+    [[ -z $WG_CONFIG ]] || rm -f -- "$WG_CONFIG"
     exit "$status"
 }
 
@@ -53,10 +55,25 @@ trap cleanup EXIT
 trap 'exit 0' TERM INT
 
 [[ ${ROLE:-} == server || ${ROLE:-} == client ]] || die "ROLE must be server or client"
-[[ -f $WG_CONFIG && -r $WG_CONFIG ]] || die "WireGuard config must be a readable file: $WG_CONFIG"
+[[ $WG_INTERFACE =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$ ]] || die "WG_INTERFACE must be 1-15 letters, digits, underscores, dots or hyphens, starting with a letter or digit"
+[[ -f $WG_SOURCE_CONFIG && -r $WG_SOURCE_CONFIG ]] || die "WireGuard config must be a readable file: $WG_SOURCE_CONFIG"
+if ip link show dev "$WG_INTERFACE" >/dev/null 2>&1; then
+    die "interface already exists: $WG_INTERFACE (choose another WG_INTERFACE or stop its owner)"
+fi
+awk -F= '
+    /^[[:space:]]*AllowedIPs[[:space:]]*=/ {
+        sub(/#.*/, "", $2); gsub(/[[:space:]]/, "", $2)
+        n=split($2, routes, ",")
+        for (i=1; i<=n; i++) if (routes[i] == "0.0.0.0/0" || routes[i] == "::/0") exit 1
+    }' "$WG_SOURCE_CONFIG" || die "default routes are not supported in host mode; use the peer tunnel subnet in AllowedIPs"
 [[ $SPEEDER_ENABLED == true || $SPEEDER_ENABLED == false ]] || die "SPEEDER_ENABLED must be true or false"
 password=$(read_secret)
 umask 077
+mkdir -p /run/wireguard
+chmod 700 /run/wireguard
+WG_CONFIG=/run/wireguard/$WG_INTERFACE.conf
+cp -- "$WG_SOURCE_CONFIG" "$WG_CONFIG"
+chmod 600 "$WG_CONFIG"
 raw_config=/run/udp2raw.conf
 
 if [[ $ROLE == client ]]; then
@@ -91,9 +108,6 @@ EOF
 
 wg-quick up "$WG_CONFIG"
 wg_up=true
-if [[ $ROLE == client ]]; then
-    ip -4 rule add to "$route_ip/32" lookup main priority 100
-fi
 
 if $SPEEDER_ENABLED; then
     if [[ $ROLE == client ]]; then
@@ -112,7 +126,7 @@ fi
 udp2raw --conf-file "$raw_config" &
 raw_pid=$!
 printf '%s\n' "$raw_pid" >/run/udp2raw.pid
-log "$ROLE started (UDPspeeder: $SPEEDER_ENABLED)"
+log "$ROLE started (interface: $WG_INTERFACE, UDPspeeder: $SPEEDER_ENABLED)"
 
 set +e
 if [[ -n $speeder_pid ]]; then

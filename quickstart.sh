@@ -40,6 +40,8 @@ out=${1:-"$root/quickstart-output"}
 [[ ! -e $out && ! -L $out ]] || die "Output already exists: $out (choose a new directory; existing keys are never overwritten)."
 image=${WG_RESILIENT_IMAGE:-criogaid/wg-resilient:latest}
 [[ $image =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]] || die 'Invalid WG_RESILIENT_IMAGE.'
+interface=${WG_INTERFACE:-wg0}
+[[ $interface =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$ ]] || die 'Invalid WG_INTERFACE (1-15 letters, digits, underscores, dots or hyphens; start with a letter or digit).'
 
 printf 'WG Resilient: generate a server and one client. No existing configuration will be changed.\n'
 while :; do
@@ -65,18 +67,6 @@ while :; do
     [[ $mtu =~ ^[0-9]{3,4}$ && $mtu != 0* ]] && ((mtu >= 576 && mtu <= 9000)) && break
     printf 'MTU must be 576-9000.\n'
 done
-while :; do
-    prompt dns 'Client DNS IPv4' 1.1.1.1
-    ipv4 "$dns" && break
-    printf 'Enter a valid IPv4 address.\n'
-done
-while :; do
-    prompt routing 'Client routes: full or tunnel' full
-    [[ $routing == full || $routing == tunnel ]] && break
-    printf 'Choose full or tunnel.\n'
-done
-allowed=0.0.0.0/0
-[[ $routing != tunnel ]] || allowed="$network/24"
 while :; do
     prompt speeder 'Enable UDPspeeder on both ends: true or false' false
     [[ $speeder == true || $speeder == false ]] && break
@@ -116,10 +106,10 @@ for role in server client; do
     target="$out/$role"
     mkdir -p -- "$target/config/$role"
     cp -- "$root/compose.$role.yml" "$target/compose.yml"
-    cp -- "$root/entrypoint.sh" "$target/"
-    chmod 700 "$target/entrypoint.sh"
-    printf 'WG_RESILIENT_IMAGE=%s\nUDP2RAW_REMOTE_HOST=%s\nUDP2RAW_PORT=%s\nUDP2RAW_PASSWORD=%s\nSPEEDER_ENABLED=%s\n' \
-        "$image" "$host" "$port" "$password" "$speeder" > "$target/.env"
+    cp -- "$root/entrypoint.sh" "$root/healthcheck.sh" "$target/"
+    chmod 700 "$target/entrypoint.sh" "$target/healthcheck.sh"
+    printf 'WG_RESILIENT_IMAGE=%s\nWG_INTERFACE=%s\nUDP2RAW_REMOTE_HOST=%s\nUDP2RAW_PORT=%s\nUDP2RAW_PASSWORD=%s\nSPEEDER_ENABLED=%s\n' \
+        "$image" "$interface" "$host" "$port" "$password" "$speeder" > "$target/.env"
     sed -e 's/\r$//' \
         -e "s|SERVER_PRIVATE_KEY|$server_private|g" \
         -e "s|SERVER_PUBLIC_KEY|$server_public|g" \
@@ -127,8 +117,6 @@ for role in server client; do
         -e "s|CLIENT_PUBLIC_KEY|$client_public|g" \
         -e "s|10.66.66.|$prefix.|g" \
         -e "s|MTU = 1280|MTU = $mtu|" \
-        -e "s|DNS = 1.1.1.1|DNS = $dns|" \
-        -e "s|AllowedIPs = 0.0.0.0/0|AllowedIPs = $allowed|" \
         -e "/^PublicKey = /a PresharedKey = $psk" \
         "$root/config/$role/wg0.conf.example" > "$target/config/$role/wg0.conf"
     cat > "$target/deploy.sh" <<'DEPLOY'
@@ -139,7 +127,7 @@ command -v docker >/dev/null 2>&1 || { echo 'Install Docker Engine and Compose v
 docker info >/dev/null
 docker compose version >/dev/null
 chmod 600 .env config/*/wg0.conf
-unset WG_RESILIENT_IMAGE UDP2RAW_REMOTE_HOST UDP2RAW_PORT UDP2RAW_PASSWORD UDP2RAW_PASSWORD_FILE
+unset WG_RESILIENT_IMAGE WG_INTERFACE UDP2RAW_REMOTE_HOST UDP2RAW_PORT UDP2RAW_PASSWORD UDP2RAW_PASSWORD_FILE
 unset SPEEDER_ENABLED SPEEDER_FEC SPEEDER_MTU SPEEDER_TIMEOUT COMPOSE_FILE COMPOSE_PROJECT_NAME
 exec docker compose --project-name wg-resilient-ROLE --env-file .env -f compose.yml up -d --pull always --no-build --wait --wait-timeout 120
 DEPLOY
@@ -156,6 +144,7 @@ printf 'Transfer ONLY %s/client.tar.gz to the client via scp/SFTP. It contains p
 printf 'Copy client (replace SSH target): scp %q/client.tar.gz user@client-host:~/\n' "$out"
 printf 'On client: umask 077; mkdir wg-client && tar -xzf ~/client.tar.gz -C wg-client && bash wg-client/client/deploy.sh\n'
 printf 'Allow TCP %s on the server firewall. Tunnel: %s.1 <-> %s.2\n' "$port" "$prefix" "$prefix"
-printf 'The client archive must be used by ONE client only. Tunnel routes apply inside its container, not the host.\n'
+printf 'Host interface: %s. Only the tunnel subnet is routed; host default route and DNS stay unchanged.\n' "$interface"
+printf 'The client archive must be used by ONE client only. Stop old bridge-mode deployments before migrating.\n'
 prompt start 'Deploy server now? y/N' N
 case $start in y|Y) bash "$out/server/deploy.sh" ;; esac
