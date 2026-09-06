@@ -38,6 +38,8 @@ if [[ ${1:-} == --help ]]; then
 fi
 out=${1:-"$root/quickstart-output"}
 [[ ! -e $out && ! -L $out ]] || die "Output already exists: $out (choose a new directory; existing keys are never overwritten)."
+image=${WG_RESILIENT_IMAGE:-criogaid/wg-resilient:latest}
+[[ $image =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]] || die 'Invalid WG_RESILIENT_IMAGE.'
 
 printf 'WG Resilient: generate a server and one client. No existing configuration will be changed.\n'
 while :; do
@@ -85,9 +87,9 @@ if command -v wg >/dev/null 2>&1; then
     wg_cmd=(wg)
 else
     command -v docker >/dev/null 2>&1 || die 'Install wireguard-tools (wg) or Docker to generate keys.'
-    printf 'Building the project image to use its WireGuard key generator...\n'
-    docker build -t wg-resilient:local "$root"
-    wg_cmd=(docker run --rm -i --entrypoint wg wg-resilient:local)
+    printf 'Pulling %s to use its WireGuard key generator...\n' "$image"
+    docker pull "$image" </dev/null
+    wg_cmd=(docker run --rm -i --entrypoint wg "$image")
 fi
 server_private=$("${wg_cmd[@]}" genkey </dev/null)
 server_public=$(printf '%s\n' "$server_private" | "${wg_cmd[@]}" pubkey)
@@ -114,9 +116,10 @@ for role in server client; do
     target="$out/$role"
     mkdir -p -- "$target/config/$role"
     cp -- "$root/compose.$role.yml" "$target/compose.yml"
-    cp -- "$root/Dockerfile" "$root/entrypoint.sh" "$root/healthcheck.sh" "$root/sysctl-wrapper.sh" "$root/.dockerignore" "$target/"
-    printf 'UDP2RAW_REMOTE_HOST=%s\nUDP2RAW_PORT=%s\nUDP2RAW_PASSWORD=%s\nSPEEDER_ENABLED=%s\n' \
-        "$host" "$port" "$password" "$speeder" > "$target/.env"
+    cp -- "$root/entrypoint.sh" "$target/"
+    chmod 700 "$target/entrypoint.sh"
+    printf 'WG_RESILIENT_IMAGE=%s\nUDP2RAW_REMOTE_HOST=%s\nUDP2RAW_PORT=%s\nUDP2RAW_PASSWORD=%s\nSPEEDER_ENABLED=%s\n' \
+        "$image" "$host" "$port" "$password" "$speeder" > "$target/.env"
     sed -e 's/\r$//' \
         -e "s|SERVER_PRIVATE_KEY|$server_private|g" \
         -e "s|SERVER_PUBLIC_KEY|$server_public|g" \
@@ -136,9 +139,9 @@ command -v docker >/dev/null 2>&1 || { echo 'Install Docker Engine and Compose v
 docker info >/dev/null
 docker compose version >/dev/null
 chmod 600 .env config/*/wg0.conf
-unset UDP2RAW_REMOTE_HOST UDP2RAW_PORT UDP2RAW_PASSWORD UDP2RAW_PASSWORD_FILE
+unset WG_RESILIENT_IMAGE UDP2RAW_REMOTE_HOST UDP2RAW_PORT UDP2RAW_PASSWORD UDP2RAW_PASSWORD_FILE
 unset SPEEDER_ENABLED SPEEDER_FEC SPEEDER_MTU SPEEDER_TIMEOUT COMPOSE_FILE COMPOSE_PROJECT_NAME
-exec docker compose --project-name wg-resilient-ROLE --env-file .env -f compose.yml up -d --build --wait --wait-timeout 120
+exec docker compose --project-name wg-resilient-ROLE --env-file .env -f compose.yml up -d --pull always --no-build --wait --wait-timeout 120
 DEPLOY
     sed "s/wg-resilient-ROLE/wg-resilient-$role/" "$target/deploy.sh" > "$target/deploy.tmp"
     mv -- "$target/deploy.tmp" "$target/deploy.sh"

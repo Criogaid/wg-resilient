@@ -22,7 +22,7 @@ trap 'exit 143' TERM
 if command -v wg >/dev/null 2>&1; then
     wg_cmd=(wg)
 else
-    wg_cmd=(docker run --rm -i --entrypoint wg wg-resilient:local)
+    wg_cmd=(docker run --rm -i --entrypoint wg "${WG_RESILIENT_IMAGE:-criogaid/wg-resilient:latest}")
 fi
 value() { sed -n "s/^$1 = //p" "$2"; }
 
@@ -41,6 +41,14 @@ c="$tmp/custom setup/client/config/client/wg0.conf"
 grep -q -- '-s 10.99.0.0/24' "$s"
 grep -q '^SPEEDER_ENABLED=true$' "$tmp/custom setup/client/.env"
 cmp "$tmp/custom setup/server/.env" "$tmp/custom setup/client/.env"
+grep -Fxq "WG_RESILIENT_IMAGE=${WG_RESILIENT_IMAGE:-criogaid/wg-resilient:latest}" "$tmp/custom setup/client/.env"
+for role in server client; do
+    [[ ! -e $tmp/custom\ setup/$role/Dockerfile ]]
+    ! grep -Eq '^ +build:' "$tmp/custom setup/$role/compose.yml"
+    grep -Fq 'criogaid/wg-resilient:latest' "$tmp/custom setup/$role/compose.yml"
+    cmp "$root/entrypoint.sh" "$tmp/custom setup/$role/entrypoint.sh"
+    [[ -x $tmp/custom\ setup/$role/entrypoint.sh ]]
+done
 ! grep -Fq "$(value PrivateKey "$s")" "$tmp/output"
 ! grep -Fq "$(value PrivateKey "$c")" "$tmp/output"
 [[ $(stat -c %a "$s") == 600 && $(stat -c %a "$tmp/custom setup") == 700 ]]
@@ -62,17 +70,17 @@ cat > "$tmp/bin/docker" <<'MOCK'
 #!/usr/bin/env bash
 set -eu
 case "$*" in info|'compose version') exit 0 ;; esac
-[[ -z ${UDP2RAW_PASSWORD+x}${UDP2RAW_PASSWORD_FILE+x}${UDP2RAW_REMOTE_HOST+x}${SPEEDER_ENABLED+x} ]] || exit 91
+[[ -z ${WG_RESILIENT_IMAGE+x}${UDP2RAW_PASSWORD+x}${UDP2RAW_PASSWORD_FILE+x}${UDP2RAW_REMOTE_HOST+x}${SPEEDER_ENABLED+x} ]] || exit 91
 printf '%s\n' "$*" > "$DEPLOY_CALL"
 exit 42
 MOCK
 chmod +x "$tmp/bin/docker"
 status=0
 PATH="$tmp/bin:$PATH" DEPLOY_CALL="$tmp/deploy-call" UDP2RAW_PASSWORD=wrong \
-    UDP2RAW_PASSWORD_FILE=wrong UDP2RAW_REMOTE_HOST=wrong SPEEDER_ENABLED=wrong \
+    WG_RESILIENT_IMAGE=wrong UDP2RAW_PASSWORD_FILE=wrong UDP2RAW_REMOTE_HOST=wrong SPEEDER_ENABLED=wrong \
     bash "$tmp/unpacked/client/deploy.sh" || status=$?
 [[ $status == 42 ]]
-grep -Fxq 'compose --project-name wg-resilient-client --env-file .env -f compose.yml up -d --build --wait --wait-timeout 120' "$tmp/deploy-call"
+grep -Fxq 'compose --project-name wg-resilient-client --env-file .env -f compose.yml up -d --pull always --no-build --wait --wait-timeout 120' "$tmp/deploy-call"
 
 if [[ ${1:-} == --e2e ]]; then
     for role in server client; do

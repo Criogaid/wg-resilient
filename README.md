@@ -15,7 +15,7 @@
 | 服务器（服务端） | 有公网 IPv4 地址、能够被外部访问的 Linux 机器，例如云服务器 | 安装 Docker Engine、Docker Compose、Git |
 | 客户端 | 想连接这台服务器的另一台 Linux 机器 | 安装 Docker Engine、Docker Compose |
 
-两台机器还需要支持 WireGuard 的 Linux 内核。部署会下载依赖并构建程序，因此两台机器都需要能访问 Debian 软件源、GitHub 和 WireGuard 的代码网站。
+两台机器还需要支持 WireGuard 的 Linux 内核，并能从 Docker Hub 下载镜像。默认使用已经编译好的 `criogaid/wg-resilient:latest`，**服务器和客户端都不用现场编译**。
 
 Docker 可以理解为运行本项目的工具。还没安装的话，先按 [Docker 官方安装说明](https://docs.docker.com/engine/install/) 选择自己的 Linux 系统进行安装，并安装 Compose 插件。
 
@@ -62,7 +62,7 @@ bash quickstart.sh
 
 脚本会自动生成两端的密钥和共同使用的随机口令，并把它们填入配置。**不用自己编密码，也不用手动交换密钥。**
 
-第一次运行可能需要下载和编译，花几分钟或更久。请等命令执行完，不要看到一段时间没有新输出就直接关掉终端。
+第一次运行会下载已编译好的镜像，所需时间取决于网速。不会安装编译工具，也不会下载源码进行构建；拉取失败会报错，不会偷偷改成本地编译。
 
 如果最后没有选 `y`，之后仍然可以在项目文件夹内运行：
 
@@ -104,9 +104,9 @@ scp quickstart-output/client.tar.gz user@client-host:~/
 umask 077; mkdir ~/wg-client && tar -xzf ~/client.tar.gz -C ~/wg-client && bash ~/wg-client/client/deploy.sh
 ```
 
-这条命令会新建 `wg-client` 文件夹、解压安装包，然后构建并启动客户端。`umask 077` 是为了让新文件默认只允许当前用户访问。
+这条命令会新建 `wg-client` 文件夹、解压安装包，然后拉取镜像并启动客户端。`umask 077` 是为了让新文件默认只允许当前用户访问。
 
-第一次启动也可能需要下载和编译。脚本会等待程序的健康检查通过；如果失败，会报错退出。
+脚本会等待程序的健康检查通过；如果镜像下载或启动失败，会报错退出。部署包只带配置和运行脚本，不带用于编译的 Dockerfile。
 
 如果提示 `wg-client` 已存在，不要急着删除。它可能就是你之前的配置。已经解压过的话，直接运行：
 
@@ -151,7 +151,7 @@ docker compose -p wg-resilient-client -f compose.yml logs --tail 100
 3. **两端都启动了吗？** 服务器和客户端都要运行各自的 `deploy.sh`。只有客户端启动是不够的。
 4. **安装包是不是配套的？** 重新生成整套配置后，两端的密钥都会变。不能拿新客户端去连接仍使用旧配置的服务器。
 5. **是否手动改过设置？** 两端的口令、端口和 UDPspeeder 开关必须匹配。
-6. **Docker 下载或构建失败了吗？** 先确认网络能访问依赖来源。解决后重新执行对应的 `deploy.sh`，不需要重新生成密钥。
+6. **Docker 镜像下载失败了吗？** 先确认网络能访问 Docker Hub。解决后重新执行对应的 `deploy.sh`，不需要重新生成密钥。
 
 如果是 Docker 权限不足，请使用有 Docker 操作权限的账户。需要管理员权限时，可以执行 `sudo bash .../deploy.sh`，其中路径要换成你实际的部署脚本路径。
 
@@ -293,13 +293,13 @@ cp config/client/wg0.conf.example config/client/wg0.conf
 服务器启动：
 
 ```sh
-docker compose -f compose.server.yml up -d --build
+docker compose -f compose.server.yml up -d --pull always --no-build
 ```
 
 客户端启动：
 
 ```sh
-docker compose -f compose.client.yml up -d --build
+docker compose -f compose.client.yml up -d --pull always --no-build
 ```
 
 ### 环境变量参考
@@ -308,6 +308,7 @@ docker compose -f compose.client.yml up -d --build
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `WG_RESILIENT_IMAGE` | `criogaid/wg-resilient:latest` | 使用的发布镜像，可以换成指定版本或可信的镜像仓库地址 |
 | `UDP2RAW_REMOTE_HOST` | 无 | 客户端必填，服务器公网 IPv4 或能解析到 IPv4 的域名 |
 | `UDP2RAW_PORT` | `4096` | 对外连接端口，两端填写相同值 |
 | `UDP2RAW_PASSWORD` | 无 | 两端相同的口令，向导自动生成 |
@@ -349,7 +350,7 @@ secrets:
 启动客户端：
 
 ```sh
-docker compose -f compose.client.yml -f compose.secret.yml up -d --build
+docker compose -f compose.client.yml -f compose.secret.yml up -d --pull always --no-build
 ```
 
 服务器将服务名换成 `wireguard-server`，Compose 文件换成 `compose.server.yml`。两端口令文件的内容必须相同，不要提交到代码仓库；使用文件后可以删除 `.env` 中的口令。
@@ -372,6 +373,7 @@ docker compose -f compose.client.yml -f compose.secret.yml up -d --build
 - 快速向导只生成 IPv4 配置，不提供整机 IPv6 隧道。
 - 不支持旧的模式、算法、内部端口、配置路径环境变量及 `udp2raw-extra.conf`。
 - 发布镜像支持 `linux/amd64`、`linux/arm64`、`linux/arm/v7`。
+- Compose 只拉取发布镜像，不含 `build` 配置；只读挂载当前项目的 `entrypoint.sh`，使启动和路由逻辑与这份配置保持一致。请保留部署目录里的此文件。
 
 参数参考：[UDPspeeder 参数说明](https://github.com/wangyu-/UDPspeeder/blob/61b24a369700c3d8248dd18fa9a524b778741454/README.md)、[wg-quick MTU 实现](https://git.zx2c4.com/wireguard-tools/tree/src/wg-quick/linux.bash)。
 
@@ -381,7 +383,7 @@ docker compose -f compose.client.yml -f compose.secret.yml up -d --build
 sh tests/check.sh
 ```
 
-快速启动配置生成测试（有 `wg` 时无需 Docker，否则会构建镜像）：
+快速启动配置生成测试（有 `wg` 时无需 Docker，否则会拉取发布镜像）：
 
 ```sh
 bash tests/quickstart.sh
@@ -401,7 +403,7 @@ SPEEDER_ENABLED=true sh tests/e2e.sh
 bash tests/quickstart.sh --e2e
 ```
 
-完整部署测试会实际构建和启停容器，通过本机 TCP 24096 映射端口检查两种模式的握手、健康状态和路由顺序。已有快速启动容器时会拒绝运行。请在测试机器上执行，防火墙需要允许测试网桥之间的转发。
+完整部署测试会实际拉取发布镜像和启停容器，通过本机 TCP 24096 映射端口检查两种模式的握手、健康状态和路由顺序。已有快速启动容器时会拒绝运行。请在测试机器上执行，防火墙需要允许测试网桥之间的转发。
 
 ### 发布镜像（维护者使用）
 

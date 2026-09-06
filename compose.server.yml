@@ -1,7 +1,6 @@
 services:
   wireguard-server:
-    image: wg-resilient:local
-    build: .
+    image: "${WG_RESILIENT_IMAGE:-criogaid/wg-resilient:latest}"
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -22,3 +21,4 @@ services:
       SPEEDER_TIMEOUT: "${SPEEDER_TIMEOUT:-8}"
     volumes:
       - ./config/server/wg0.conf:/config/wg0.conf:ro
+      - ./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
