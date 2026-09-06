@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the latest verified wireguard-tools image
+        required: true
+        type: boolean
+        default: false
   schedule:
     - cron: '17 3 * * 1'
 
@@ -18,7 +24,7 @@ concurrency:
 
 jobs:
   validate:
-    if: ${{ github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/v') && !(github.event_name == 'workflow_dispatch' && inputs.publish) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -37,7 +43,7 @@ jobs:
           SPEEDER_ENABLED=true ./tests/e2e.sh
 
   resolve-release:
-    if: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
     runs-on: ubuntu-24.04
     outputs:
       publish: ${{ steps.resolve.outputs.publish }}
@@ -65,7 +71,7 @@ jobs:
           [[ $wg_commit =~ ^[0-9a-f]{40}$ ]]
 
           evidence_tag="wireguard-tools-${wg_version#v}"
-          if [[ $GITHUB_EVENT_NAME == schedule ]]; then
+          if [[ $GITHUB_EVENT_NAME == schedule || $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
             public_tag=$evidence_tag
           else
             public_tag=${GITHUB_REF_NAME#v}
@@ -86,7 +92,7 @@ jobs:
             done < <(jq -r '.manifests[] | select(.annotations."vnd.docker.reference.type" != "attestation-manifest") | .digest' <<<"$manifest")
           }
 
-          if [[ $GITHUB_EVENT_NAME == schedule ]] && published_contract_valid; then
+          if [[ $GITHUB_EVENT_NAME != push ]] && published_contract_valid; then
             publish=false
           fi
 
