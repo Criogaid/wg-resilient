@@ -19,5 +19,3 @@ services:
       SPEEDER_TIMEOUT: "${SPEEDER_TIMEOUT:-8}"
     volumes:
       - ./config/client/wg0.conf:/config/wg0.conf:ro
-      - ./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
-      - ./healthcheck.sh:/usr/local/bin/healthcheck.sh:ro

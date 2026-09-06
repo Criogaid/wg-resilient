@@ -69,18 +69,18 @@ server_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}
 
 docker run -d --name "$client" --network "$network" \
     --cap-add NET_ADMIN --cap-add NET_RAW \
-    -e ROLE=client -e UDP2RAW_REMOTE_HOST="$server_ip" \
+    -e ROLE=client -e WG_INTERFACE=wg-peer -e UDP2RAW_REMOTE_HOST="$server_ip" \
     -e UDP2RAW_PASSWORD_FILE=/run/secrets/password -e SPEEDER_ENABLED="$speeder" \
     -e SPEEDER_FEC=10:3 -e SPEEDER_TIMEOUT=5 -e SPEEDER_MTU=1200 \
     -v "$tmp/password:/run/secrets/password:ro" \
     -v "$tmp/client.conf:/config/wg0.conf:ro" "$image" >/dev/null
 
 for _ in $(seq 1 20); do
-    handshake=$(docker exec "$client" wg show wg0 latest-handshakes 2>/dev/null | awk 'NR == 1 { print $2 }')
+    handshake=$(docker exec "$client" wg show wg-peer latest-handshakes 2>/dev/null | awk 'NR == 1 { print $2 }')
     if [ "${handshake:-0}" -gt 0 ]; then
         docker exec "$client" healthcheck.sh
         docker exec "$server" healthcheck.sh
-        [ "$(docker exec "$client" cat /sys/class/net/wg0/mtu)" = 1280 ]
+        [ "$(docker exec "$client" cat /sys/class/net/wg-peer/mtu)" = 1280 ]
         [ "$(docker exec "$server" cat /sys/class/net/wg0/mtu)" = 1280 ]
         docker stop -t 10 "$client" "$server" >/dev/null
         [ "$(docker inspect -f '{{.State.ExitCode}}' "$client")" -eq 0 ]

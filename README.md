@@ -230,14 +230,6 @@ WG_INTERFACE=wg-link
 
 磁盘上的配置文件仍叫 `config/server/wg0.conf` 或 `config/client/wg0.conf`，**不用改文件名**。不要只在终端 `export WG_INTERFACE` 后运行已有的 `deploy.sh`：部署脚本以它旁边的 `.env` 为准。
 
-### 从旧版桥接部署迁移
-
-不要只替换一份 Compose 就直接启动旧配置。先备份两端部署目录，并分别用旧目录的 Compose 执行 `down`，让旧容器清理它自己的规则。
-
-保留密钥迁移时，需同时更新两端的 Compose、`entrypoint.sh`、`healthcheck.sh`，在 `.env` 中增加 `WG_INTERFACE=wg0`。删除旧 `wg0.conf` 中为容器转发而添加的 `PostUp` / `PostDown`（包括 DNAT、MASQUERADE），删除客户端的 `DNS` 行，把客户端 `AllowedIPs = 0.0.0.0/0` 改为实际隧道网段，例如 `10.66.66.0/24`。再重新创建容器。**新入口会拒绝 IPv4/IPv6 默认路由，避免旧全流量配置影响宿主机。**
-
-如果不需要保留旧密钥，也可以用新向导生成新目录并配套部署两端。`git pull` 不会自动更新之前生成的目录或压缩包。
-
 ### 想重新生成一套配置？
 
 向导不会覆盖已有的输出文件夹，防止误删正在使用的密钥。需要重新生成时，在项目文件夹执行下面的命令，指定一个尚不存在的新目录：
@@ -347,7 +339,7 @@ docker compose -f compose.client.yml up -d --pull always --no-build
 | `SPEEDER_MTU` | `1250` | UDPspeeder 分片大小 |
 | `SPEEDER_TIMEOUT` | `8` | 等待一组数据的时间，单位为毫秒 |
 
-WireGuard 的密钥、地址、隧道路由和 MTU 写在 `wg0.conf`，不是 `.env`。默认不设置 DNS、NAT、转发规则或默认路由。不要改动以下内部连接设置：
+WireGuard 的密钥、地址、隧道路由和 MTU 写在 `wg0.conf`，不是 `.env`。默认不设置 DNS、NAT、转发规则或默认路由，并拒绝 `AllowedIPs` 中的 IPv4/IPv6 默认路由，避免改变宿主机上网路径。不要改动以下内部连接设置：
 
 - 服务器：`ListenPort = 51820`。
 - 客户端：`Endpoint = 127.0.0.1:51821`，这里不是填写公网 IP 的地方。
@@ -400,9 +392,8 @@ docker compose -f compose.client.yml -f compose.secret.yml up -d --pull always -
 - Compose 使用 `network_mode: host`，保留 `NET_ADMIN`、`NET_RAW`；不设置端口映射和容器级网络 sysctl。
 - 默认仅由 `wg-quick` 配置接口和隧道网段路由，不添加额外策略路由、不启用 IP 转发、不设置 NAT。udp2raw 的 FakeTCP 防 RST 规则仍由 `-a` 自动添加并清理，这是传输正常工作所必需的。
 - 快速向导只生成 IPv4 配置，不提供整机 IPv6 隧道。
-- 不支持旧的模式、算法、内部端口、配置路径环境变量及 `udp2raw-extra.conf`。
 - 发布镜像支持 `linux/amd64`、`linux/arm64`、`linux/arm/v7`。
-- Compose 只拉取发布镜像，不含 `build` 配置；只读挂载当前项目的 `entrypoint.sh` 和 `healthcheck.sh`，使接口管理和健康检查与这份配置保持一致。请保留部署目录里的这两个文件。
+- Compose 只拉取发布镜像，不含 `build` 配置，只挂载 `wg0.conf`。入口脚本和健康检查都包含在镜像内；部署包只需配置文件、Compose 和 `deploy.sh`。
 
 参数参考：[UDPspeeder 参数说明](https://github.com/wangyu-/UDPspeeder/blob/61b24a369700c3d8248dd18fa9a524b778741454/README.md)、[wg-quick MTU 实现](https://git.zx2c4.com/wireguard-tools/tree/src/wg-quick/linux.bash)。
 

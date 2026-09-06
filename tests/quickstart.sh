@@ -55,10 +55,9 @@ for role in server client; do
     ! grep -Eq '^ +(build|ports|sysctls):' "$tmp/custom setup/$role/compose.yml" || exit 1
     grep -Fq 'network_mode: host' "$tmp/custom setup/$role/compose.yml"
     ! grep -Eq '^(PostUp|PostDown|DNS)|0\.0\.0\.0/0' "$tmp/custom setup/$role/config/$role/wg0.conf" || exit 1
-    for script in entrypoint.sh healthcheck.sh; do
-        cmp "$root/$script" "$tmp/custom setup/$role/$script"
-        [[ -x "$tmp/custom setup/$role/$script" ]]
-    done
+    [[ ! -e "$tmp/custom setup/$role/entrypoint.sh" ]]
+    [[ ! -e "$tmp/custom setup/$role/healthcheck.sh" ]]
+    ! grep -Eq '/usr/local/bin/(entrypoint|healthcheck)\.sh' "$tmp/custom setup/$role/compose.yml" || exit 1
 done
 ! grep -Fq "$(value PrivateKey "$s")" "$tmp/output" || exit 1
 ! grep -Fq "$(value PrivateKey "$c")" "$tmp/output" || exit 1
@@ -160,7 +159,6 @@ if [[ ${1:-} == --e2e ]]; then
         done
         if docker run --rm --network "container:$host_server" --cap-add NET_ADMIN \
             -e ROLE=server -e WG_INTERFACE="$server_interface" -e UDP2RAW_PASSWORD=test \
-            -v "$root/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro" \
             -v "$tmp/run/server/config/server/wg0.conf:/config/wg0.conf:ro" "$image" > "$tmp/conflict.log" 2>&1; then exit 1; fi
         grep -q 'interface already exists' "$tmp/conflict.log"
         docker exec "$host_server" wg show "$server_interface" >/dev/null
@@ -181,13 +179,12 @@ if [[ ${1:-} == --e2e ]]; then
     done
     for invalid in ../wg0 'bad name' 1234567890123456; do
         if docker run --rm -e ROLE=server -e WG_INTERFACE="$invalid" \
-            -v "$root/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro" "$image" > "$tmp/invalid.log" 2>&1; then exit 1; fi
+            "$image" > "$tmp/invalid.log" 2>&1; then exit 1; fi
         grep -q 'WG_INTERFACE must be' "$tmp/invalid.log"
     done
-    sed 's|AllowedIPs = .*|AllowedIPs = 0.0.0.0/0|' "$c" > "$tmp/legacy.conf"
+    sed 's|AllowedIPs = .*|AllowedIPs = 0.0.0.0/0|' "$c" > "$tmp/default-route.conf"
     if docker run --rm --cap-add NET_ADMIN -e ROLE=client -e UDP2RAW_PASSWORD=test \
-        -v "$root/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro" \
-        -v "$tmp/legacy.conf:/config/wg0.conf:ro" "$image" > "$tmp/legacy.log" 2>&1; then exit 1; fi
-    grep -q 'default routes are not supported' "$tmp/legacy.log"
+        -v "$tmp/default-route.conf:/config/wg0.conf:ro" "$image" > "$tmp/default-route.log" 2>&1; then exit 1; fi
+    grep -q 'default routes are not supported' "$tmp/default-route.log"
 fi
 echo 'quickstart checks passed'

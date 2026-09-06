@@ -42,8 +42,7 @@ COPY --from=build /src/wireguard-tools/src/wg /usr/local/bin/wg
 COPY --from=build /src/wireguard-tools/src/wg-quick/linux.bash /usr/local/bin/wg-quick
 COPY --from=build /src/wireguard-tools/COPYING /usr/share/doc/wireguard-tools/copyright
 COPY entrypoint.sh healthcheck.sh /usr/local/bin/
-COPY sysctl-wrapper.sh /usr/local/bin/sysctl
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.sh /usr/local/bin/sysctl /usr/local/bin/wg /usr/local/bin/wg-quick
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.sh /usr/local/bin/wg /usr/local/bin/wg-quick
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["healthcheck.sh"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

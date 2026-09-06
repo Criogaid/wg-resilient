@@ -6,7 +6,6 @@ bash -n entrypoint.sh
 bash -n quickstart.sh
 bash -n tests/quickstart.sh
 sh -n healthcheck.sh
-sh -n sysctl-wrapper.sh
 sh -n tests/e2e.sh
 grep -q 'Endpoint = 127.0.0.1:51821' config/client/wg0.conf.example
 ! grep -q 'ip -4 rule add' entrypoint.sh || exit 1
@@ -14,6 +13,7 @@ grep -q 'Endpoint = 127.0.0.1:51821' config/client/wg0.conf.example
 for role in server client; do
     grep -q 'network_mode: host' "compose.$role.yml"
     ! grep -Eq '^ +(ports|sysctls|build):' "compose.$role.yml" || exit 1
+    ! grep -Eq '/usr/local/bin/(entrypoint|healthcheck)\.sh' "compose.$role.yml" || exit 1
 done
 
 if command -v docker >/dev/null 2>&1; then

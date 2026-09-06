@@ -106,8 +106,6 @@ for role in server client; do
     target="$out/$role"
     mkdir -p -- "$target/config/$role"
     cp -- "$root/compose.$role.yml" "$target/compose.yml"
-    cp -- "$root/entrypoint.sh" "$root/healthcheck.sh" "$target/"
-    chmod 700 "$target/entrypoint.sh" "$target/healthcheck.sh"
     printf 'WG_RESILIENT_IMAGE=%s\nWG_INTERFACE=%s\nUDP2RAW_REMOTE_HOST=%s\nUDP2RAW_PORT=%s\nUDP2RAW_PASSWORD=%s\nSPEEDER_ENABLED=%s\n' \
         "$image" "$interface" "$host" "$port" "$password" "$speeder" > "$target/.env"
     sed -e 's/\r$//' \
@@ -145,6 +143,6 @@ printf 'Copy client (replace SSH target): scp %q/client.tar.gz user@client-host:
 printf 'On client: umask 077; mkdir wg-client && tar -xzf ~/client.tar.gz -C wg-client && bash wg-client/client/deploy.sh\n'
 printf 'Allow TCP %s on the server firewall. Tunnel: %s.1 <-> %s.2\n' "$port" "$prefix" "$prefix"
 printf 'Host interface: %s. Only the tunnel subnet is routed; host default route and DNS stay unchanged.\n' "$interface"
-printf 'The client archive must be used by ONE client only. Stop old bridge-mode deployments before migrating.\n'
+printf 'The client archive must be used by ONE client only.\n'
 prompt start 'Deploy server now? y/N' N
 case $start in y|Y) bash "$out/server/deploy.sh" ;; esac
